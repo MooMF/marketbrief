@@ -30,7 +30,6 @@ from marketbrief.core.config import MarketBriefConfig
 log = logging.getLogger("marketbrief")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-# Global config — initialized once at startup
 _cfg: MarketBriefConfig | None = None
 
 
@@ -40,8 +39,6 @@ def _get_cfg() -> MarketBriefConfig:
         _cfg = MarketBriefConfig()
     return _cfg
 
-
-# ── Tool Definitions ────────────────────────────────────────────────────────
 
 TOOLS = [
     Tool(
@@ -74,8 +71,8 @@ TOOLS = [
         name="fetch_market_data",
         description=(
             "Fetch current market snapshot — equities, commodities, FX, rates, "
-            "volatility, and crypto prices. Uses Yahoo Finance (primary) and "
-            "Stooq (fallback). No API key required."
+            "volatility, and optional crypto prices. Market data uses Yahoo Finance "
+            "with Frankfurter/Stooq fallbacks; crypto uses CoinGecko. No API key required."
         ),
         inputSchema={
             "type": "object",
@@ -83,12 +80,12 @@ TOOLS = [
                 "assets": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Specific asset labels to fetch (e.g. ['S&P 500', 'Gold']). Omit for all.",
+                    "description": "Specific non-crypto asset labels to return (e.g. ['S&P 500', 'Gold']). Omit for all.",
                 },
                 "include_crypto": {
                     "type": "boolean",
                     "default": True,
-                    "description": "Include crypto prices from CoinGecko",
+                    "description": "Include configured crypto prices from CoinGecko",
                 },
             },
         },
@@ -170,10 +167,7 @@ TOOLS = [
             "using advance/decline ratios, new highs/lows, moving average "
             "crossovers, and divergence signals."
         ),
-        inputSchema={
-            "type": "object",
-            "properties": {},
-        },
+        inputSchema={"type": "object", "properties": {}},
     ),
     Tool(
         name="fetch_etf_flows",
@@ -196,12 +190,10 @@ TOOLS = [
 
 
 async def list_tools(ctx, params) -> ListToolsResult:
-    """Handle tools/list for the low-level MCP Server API."""
     return ListToolsResult(tools=TOOLS)
 
 
 async def call_tool(ctx, params) -> CallToolResult:
-    """Handle tools/call for the low-level MCP Server API."""
     name = params.name
     arguments = params.arguments or {}
     cfg = _get_cfg()
@@ -226,7 +218,6 @@ async def call_tool(ctx, params) -> CallToolResult:
 
         text = json.dumps(result, ensure_ascii=False, indent=2, default=str)
         return CallToolResult(content=[TextContent(type="text", text=text)])
-
     except Exception as e:
         log.error(f"Tool {name} failed: {e}")
         text = json.dumps({"error": str(e)})
@@ -240,9 +231,6 @@ server = Server(
 )
 
 
-# ── Tool Handlers ────────────────────────────────────────────────────────────
-
-
 def _handle_generate_report(cfg: MarketBriefConfig, args: dict) -> dict:
     from marketbrief.core.pipeline import run_pipeline
 
@@ -253,15 +241,62 @@ def _handle_generate_report(cfg: MarketBriefConfig, args: dict) -> dict:
     )
 
 
+def _format_filtered_market_text(prices: dict[str, dict]) -> str:
+    """Render a concise snapshot containing only the selected market assets."""
+    lines = ["=== MARKET SNAPSHOT ==="]
+    for label, item in prices.items():
+        close = item.get("close")
+        change = item.get("chg_pct")
+        symbol = item.get("symbol", "")
+        if isinstance(close, (int, float)) and isinstance(change, (int, float)):
+            lines.append(f"{label} ({symbol}): {close:g} {change:+.1f}%")
+        else:
+            lines.append(f"{label} ({symbol}): N/A")
+    return "\n".join(lines)
+
+
+def _format_crypto_text(crypto: list[dict]) -> str:
+    """Render configured CoinGecko assets for the MCP text response."""
+    if not crypto:
+        return ""
+    lines = ["-- Crypto --"]
+    for coin in crypto:
+        lines.append(
+            f"{coin.get('name', coin.get('symbol', ''))} ({coin.get('symbol', '')}): "
+            f"${coin.get('price', 0):g} {coin.get('chg_24h', 0):+.1f}% 24h"
+        )
+    return "\n".join(lines)
+
+
 def _handle_fetch_market(cfg: MarketBriefConfig, args: dict) -> dict:
     from marketbrief.fetchers.market import fetch_market_snapshot
 
     data = fetch_market_snapshot(cfg)
+    if not isinstance(data, dict):
+        return {"text": "", "prices": {}, "crypto": []}
+
     requested = args.get("assets")
-    if requested and isinstance(data, dict) and "prices" in data:
-        data["prices"] = {
-            k: v for k, v in data["prices"].items() if k in requested
-        }
+    prices = data.get("prices", {})
+    if requested and isinstance(prices, dict):
+        requested_set = set(requested)
+        prices = {k: v for k, v in prices.items() if k in requested_set}
+        data["prices"] = prices
+        data["text"] = _format_filtered_market_text(prices)
+
+    include_crypto = args.get("include_crypto", True)
+    crypto: list[dict] = []
+    if include_crypto:
+        from marketbrief.fetchers.crypto import fetch_crypto
+
+        crypto = fetch_crypto(cfg)
+        data["crypto"] = crypto
+        crypto_text = _format_crypto_text(crypto)
+        if crypto_text:
+            base_text = data.get("text", "")
+            data["text"] = f"{base_text}\n\n{crypto_text}" if base_text else crypto_text
+    else:
+        data["crypto"] = []
+
     return data
 
 
@@ -285,7 +320,6 @@ def _handle_fetch_news(cfg: MarketBriefConfig, args: dict) -> dict:
 
     max_items = args.get("max_items", 50)
     items = items[:max_items]
-
     return {"items": items, "count": len(items)}
 
 
@@ -299,14 +333,12 @@ def _handle_fetch_calendar(cfg: MarketBriefConfig, args: dict) -> dict:
     impact = args.get("impact", "all")
     if impact != "all":
         events = [e for e in events if e.get("impact", "").lower() == impact]
-
     return {"events": events, "count": len(events)}
 
 
 def _handle_analyze_regime(cfg: MarketBriefConfig, args: dict) -> dict:
     try:
         from marketbrief.skills.regime_detector import analyze
-
         return analyze(lookback_days=args.get("lookback_days", 90))
     except ImportError:
         return {"error": "Regime detector skill not yet ported", "status": "stub"}
@@ -315,7 +347,6 @@ def _handle_analyze_regime(cfg: MarketBriefConfig, args: dict) -> dict:
 def _handle_analyze_breadth(cfg: MarketBriefConfig, args: dict) -> dict:
     try:
         from marketbrief.skills.breadth_analyzer import analyze
-
         return analyze()
     except ImportError:
         return {"error": "Breadth analyzer skill not yet ported", "status": "stub"}
@@ -331,22 +362,12 @@ def _handle_fetch_etf_flows(cfg: MarketBriefConfig, args: dict) -> dict:
     return data
 
 
-# ── Transports ───────────────────────────────────────────────────────────────
-
-
 async def run_stdio():
-    """Run MCP server over stdio transport."""
     async with stdio_server() as (read_stream, write_stream):
         await server.run(read_stream, write_stream, server.create_initialization_options())
 
 
 def create_streamable_http_app() -> Starlette:
-    """Build a stateless Streamable HTTP ASGI app.
-
-    Stateless mode is deliberate: MarketBrief tools do not rely on MCP session
-    state, and stateless requests are a better fit for container scale-to-zero
-    and multiple replicas behind a load balancer.
-    """
     session_manager = StreamableHTTPSessionManager(
         app=server,
         stateless=True,
@@ -371,7 +392,6 @@ def create_streamable_http_app() -> Starlette:
 
 
 def run_streamable_http(port: int) -> None:
-    """Run the production Streamable HTTP transport."""
     import uvicorn
 
     host = os.getenv("MCP_HOST", "0.0.0.0")
@@ -380,7 +400,6 @@ def run_streamable_http(port: int) -> None:
 
 
 def run_sse(port: int) -> None:
-    """Run the legacy HTTP+SSE transport for compatibility."""
     from mcp.server.sse import SseServerTransport
     import uvicorn
 
@@ -403,7 +422,6 @@ def run_sse(port: int) -> None:
 
 
 def _port_after(flag: str, default: int = 8080) -> int:
-    """Read an optional integer port immediately following a CLI flag."""
     try:
         idx = sys.argv.index(flag) + 1
         return int(sys.argv[idx]) if idx < len(sys.argv) else default
@@ -412,7 +430,6 @@ def _port_after(flag: str, default: int = 8080) -> int:
 
 
 def main():
-    """CLI entry point for the MCP server."""
     if "--http" in sys.argv or "--streamable-http" in sys.argv:
         flag = "--http" if "--http" in sys.argv else "--streamable-http"
         run_streamable_http(_port_after(flag))
@@ -420,7 +437,6 @@ def main():
         run_sse(_port_after("--sse"))
     else:
         import asyncio
-
         asyncio.run(run_stdio())
 
 
