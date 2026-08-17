@@ -20,7 +20,7 @@ import sys
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
-from mcp.types import TextContent, Tool
+from mcp.types import CallToolResult, ListToolsResult, TextContent, Tool
 from starlette.applications import Starlette
 from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
@@ -29,8 +29,6 @@ from marketbrief.core.config import MarketBriefConfig
 
 log = logging.getLogger("marketbrief")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-
-server = Server("marketbrief")
 
 # Global config — initialized once at startup
 _cfg: MarketBriefConfig | None = None
@@ -197,13 +195,15 @@ TOOLS = [
 ]
 
 
-@server.list_tools()
-async def list_tools():
-    return TOOLS
+async def list_tools(ctx, params) -> ListToolsResult:
+    """Handle tools/list for the low-level MCP Server API."""
+    return ListToolsResult(tools=TOOLS)
 
 
-@server.call_tool()
-async def call_tool(name: str, arguments: dict) -> list[TextContent]:
+async def call_tool(ctx, params) -> CallToolResult:
+    """Handle tools/call for the low-level MCP Server API."""
+    name = params.name
+    arguments = params.arguments or {}
     cfg = _get_cfg()
 
     try:
@@ -225,11 +225,19 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = {"error": f"Unknown tool: {name}"}
 
         text = json.dumps(result, ensure_ascii=False, indent=2, default=str)
-        return [TextContent(type="text", text=text)]
+        return CallToolResult(content=[TextContent(type="text", text=text)])
 
     except Exception as e:
         log.error(f"Tool {name} failed: {e}")
-        return [TextContent(type="text", text=json.dumps({"error": str(e)}))]
+        text = json.dumps({"error": str(e)})
+        return CallToolResult(content=[TextContent(type="text", text=text)], isError=True)
+
+
+server = Server(
+    "marketbrief",
+    on_list_tools=list_tools,
+    on_call_tool=call_tool,
+)
 
 
 # ── Tool Handlers ────────────────────────────────────────────────────────────
