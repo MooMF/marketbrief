@@ -1,0 +1,80 @@
+name: Streamable HTTP Smoke Test
+
+on:
+  push:
+    paths:
+      - "mcp_server/server.py"
+      - "pyproject.toml"
+      - ".github/workflows/streamable-http-smoke.yml"
+  workflow_dispatch:
+
+jobs:
+  smoke-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install MarketBrief with MCP support
+        run: python -m pip install -e ".[mcp]"
+
+      - name: Start Streamable HTTP server
+        run: |
+          python -m marketbrief.mcp_server --http 8080 > /tmp/marketbrief-mcp.log 2>&1 &
+          echo $! > /tmp/marketbrief-mcp.pid
+
+      - name: Wait for health endpoint
+        run: |
+          for i in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:8080/health; then
+              echo
+              exit 0
+            fi
+            sleep 1
+          done
+          cat /tmp/marketbrief-mcp.log
+          exit 1
+
+      - name: MCP initialize and list tools
+        run: |
+          python - <<'PY'
+          import asyncio
+          from mcp.client.session import ClientSession
+          from mcp.client.streamable_http import streamablehttp_client
+
+          async def main():
+              async with streamablehttp_client("http://127.0.0.1:8080/mcp") as streams:
+                  read_stream, write_stream, _ = streams
+                  async with ClientSession(read_stream, write_stream) as session:
+                      init = await session.initialize()
+                      print("server:", init.serverInfo.name)
+                      tools = await session.list_tools()
+                      names = [tool.name for tool in tools.tools]
+                      print("tools:", names)
+                      expected = {
+                          "generate_report",
+                          "fetch_market_data",
+                          "fetch_news",
+                          "fetch_calendar",
+                          "analyze_regime",
+                          "analyze_breadth",
+                          "fetch_etf_flows",
+                      }
+                      missing = expected - set(names)
+                      if missing:
+                          raise SystemExit(f"Missing MCP tools: {sorted(missing)}")
+
+          asyncio.run(main())
+          PY
+
+      - name: Show server log
+        if: always()
+        run: cat /tmp/marketbrief-mcp.log || true
