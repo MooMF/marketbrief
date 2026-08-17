@@ -1,8 +1,9 @@
 """MarketBrief MCP Server — expose market intelligence tools to AI assistants.
 
 Run:
-    python -m marketbrief.mcp_server              # stdio (Claude Desktop / Claude Code)
-    python -m marketbrief.mcp_server --sse 8080    # SSE (remote clients)
+    python -m marketbrief.mcp_server                   # stdio (local clients)
+    python -m marketbrief.mcp_server --http 8080       # Streamable HTTP (remote clients)
+    python -m marketbrief.mcp_server --sse 8080        # legacy SSE compatibility
 
 Install:
     pip install marketbrief[mcp]
@@ -10,13 +11,19 @@ Install:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
+import os
 import sys
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
+from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from mcp.types import TextContent, Tool
+from starlette.applications import Starlette
+from starlette.responses import JSONResponse
+from starlette.routing import Mount, Route
 
 from marketbrief.core.config import MarketBriefConfig
 
@@ -242,7 +249,6 @@ def _handle_fetch_market(cfg: MarketBriefConfig, args: dict) -> dict:
     from marketbrief.fetchers.market import fetch_market_snapshot
 
     data = fetch_market_snapshot(cfg)
-    # Filter by requested assets if specified
     requested = args.get("assets")
     if requested and isinstance(data, dict) and "prices" in data:
         data["prices"] = {
@@ -258,19 +264,17 @@ def _handle_fetch_news(cfg: MarketBriefConfig, args: dict) -> dict:
     if not isinstance(items, list):
         return {"items": [], "count": 0}
 
-    # Filter by category
     categories = args.get("categories")
     if categories:
         items = [i for i in items if i.get("category", "") in categories]
 
-    # Filter by hours
     hours = args.get("hours", 24)
     if hours:
         import time
+
         cutoff = time.time() - (hours * 3600)
         items = [i for i in items if i.get("published_at", 0) >= cutoff]
 
-    # Limit
     max_items = args.get("max_items", 50)
     items = items[:max_items]
 
@@ -284,7 +288,6 @@ def _handle_fetch_calendar(cfg: MarketBriefConfig, args: dict) -> dict:
     if not isinstance(events, list):
         return {"events": [], "count": 0}
 
-    # Filter by impact
     impact = args.get("impact", "all")
     if impact != "all":
         events = [e for e in events if e.get("impact", "").lower() == impact]
@@ -295,6 +298,7 @@ def _handle_fetch_calendar(cfg: MarketBriefConfig, args: dict) -> dict:
 def _handle_analyze_regime(cfg: MarketBriefConfig, args: dict) -> dict:
     try:
         from marketbrief.skills.regime_detector import analyze
+
         return analyze(lookback_days=args.get("lookback_days", 90))
     except ImportError:
         return {"error": "Regime detector skill not yet ported", "status": "stub"}
@@ -303,6 +307,7 @@ def _handle_analyze_regime(cfg: MarketBriefConfig, args: dict) -> dict:
 def _handle_analyze_breadth(cfg: MarketBriefConfig, args: dict) -> dict:
     try:
         from marketbrief.skills.breadth_analyzer import analyze
+
         return analyze()
     except ImportError:
         return {"error": "Breadth analyzer skill not yet ported", "status": "stub"}
@@ -318,7 +323,7 @@ def _handle_fetch_etf_flows(cfg: MarketBriefConfig, args: dict) -> dict:
     return data
 
 
-# ── Entry Point ──────────────────────────────────────────────────────────────
+# ── Transports ───────────────────────────────────────────────────────────────
 
 
 async def run_stdio():
@@ -327,37 +332,87 @@ async def run_stdio():
         await server.run(read_stream, write_stream, server.create_initialization_options())
 
 
-def main():
-    """CLI entry point for the MCP server."""
-    import asyncio
+def create_streamable_http_app() -> Starlette:
+    """Build a stateless Streamable HTTP ASGI app.
 
-    if "--sse" in sys.argv:
-        try:
-            port_idx = sys.argv.index("--sse") + 1
-            port = int(sys.argv[port_idx]) if port_idx < len(sys.argv) else 8080
-        except (ValueError, IndexError):
-            port = 8080
+    Stateless mode is deliberate: MarketBrief tools do not rely on MCP session
+    state, and stateless requests are a better fit for container scale-to-zero
+    and multiple replicas behind a load balancer.
+    """
+    session_manager = StreamableHTTPSessionManager(
+        app=server,
+        stateless=True,
+        json_response=True,
+    )
 
-        from mcp.server.sse import SseServerTransport
-        from starlette.applications import Starlette
-        from starlette.routing import Route
-        import uvicorn
+    @contextlib.asynccontextmanager
+    async def lifespan(app: Starlette):
+        async with session_manager.run():
+            yield
 
-        sse = SseServerTransport("/messages")
+    async def health(request):
+        return JSONResponse({"status": "ok", "service": "marketbrief-mcp"})
 
-        async def handle_sse(request):
-            async with sse.connect_sse(request.scope, request.receive, request._send) as streams:
-                await server.run(streams[0], streams[1], server.create_initialization_options())
+    return Starlette(
+        routes=[
+            Route("/health", endpoint=health, methods=["GET"]),
+            Mount("/mcp", app=session_manager.handle_request),
+        ],
+        lifespan=lifespan,
+    )
 
-        app = Starlette(routes=[
+
+def run_streamable_http(port: int) -> None:
+    """Run the production Streamable HTTP transport."""
+    import uvicorn
+
+    host = os.getenv("MCP_HOST", "0.0.0.0")
+    log.info(f"Starting MarketBrief MCP server (Streamable HTTP) on {host}:{port}/mcp")
+    uvicorn.run(create_streamable_http_app(), host=host, port=port)
+
+
+def run_sse(port: int) -> None:
+    """Run the legacy HTTP+SSE transport for compatibility."""
+    from mcp.server.sse import SseServerTransport
+    import uvicorn
+
+    sse = SseServerTransport("/messages")
+
+    async def handle_sse(request):
+        async with sse.connect_sse(request.scope, request.receive, request._send) as streams:
+            await server.run(streams[0], streams[1], server.create_initialization_options())
+
+    app = Starlette(
+        routes=[
             Route("/sse", endpoint=handle_sse),
             Route("/messages", endpoint=sse.handle_post_message, methods=["POST"]),
-        ])
+        ]
+    )
 
-        log.info(f"Starting MarketBrief MCP server (SSE) on port {port}")
-        uvicorn.run(app, host="0.0.0.0", port=port)
+    log.warning("SSE transport is legacy; prefer --http for new deployments")
+    log.info(f"Starting MarketBrief MCP server (SSE) on port {port}")
+    uvicorn.run(app, host="0.0.0.0", port=port)
+
+
+def _port_after(flag: str, default: int = 8080) -> int:
+    """Read an optional integer port immediately following a CLI flag."""
+    try:
+        idx = sys.argv.index(flag) + 1
+        return int(sys.argv[idx]) if idx < len(sys.argv) else default
+    except (ValueError, IndexError):
+        return default
+
+
+def main():
+    """CLI entry point for the MCP server."""
+    if "--http" in sys.argv or "--streamable-http" in sys.argv:
+        flag = "--http" if "--http" in sys.argv else "--streamable-http"
+        run_streamable_http(_port_after(flag))
+    elif "--sse" in sys.argv:
+        run_sse(_port_after("--sse"))
     else:
-        log.info("Starting MarketBrief MCP server (stdio)")
+        import asyncio
+
         asyncio.run(run_stdio())
 
 
