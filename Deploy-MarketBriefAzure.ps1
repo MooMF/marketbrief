@@ -1,14 +1,12 @@
 param(
-    [Parameter(Mandatory = $true)]
-    [string]$AcrName,
-
-    [string]$ResourceGroup = "rg-marketbrief",
-    [string]$EnvironmentName = "marketbrief-env",
+    [string]$AcrName = "ca799bf66e13acr",
+    [string]$ResourceGroup = "ever-jobs-rg",
+    [string]$EnvironmentName = "ever-jobs-env",
     [string]$AppName = "marketbrief-mcp",
-    [string]$Location = "uksouth",
     [string]$ImageName = "marketbrief-mcp",
     [string]$Tag = "latest",
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    [switch]$SkipPush
 )
 
 $ErrorActionPreference = "Stop"
@@ -19,52 +17,45 @@ if ($LASTEXITCODE -ne 0) {
     az login | Out-Null
 }
 
-Write-Host "Ensuring required providers are registered..."
-az provider register --namespace Microsoft.App --wait
-az provider register --namespace Microsoft.OperationalInsights --wait
-az provider register --namespace Microsoft.ContainerRegistry --wait
-
-Write-Host "Ensuring resource group '$ResourceGroup' exists..."
-$rgExists = az group exists --name $ResourceGroup --output tsv
-if ($rgExists -ne "true") {
-    az group create --name $ResourceGroup --location $Location --output none
-}
-
 $loginServer = az acr show --name $AcrName --query loginServer --output tsv
 if (-not $loginServer) {
     throw "Could not resolve ACR '$AcrName'."
 }
 
-$image = "$loginServer/$ImageName`:$Tag"
-
-if (-not $SkipBuild) {
-    Write-Host "Building and pushing $image via ACR Tasks..."
-    az acr build `
-        --registry $AcrName `
-        --image "$ImageName`:$Tag" `
-        .
-}
-
-Write-Host "Ensuring Container Apps environment '$EnvironmentName' exists..."
 $envId = az containerapp env show `
     --name $EnvironmentName `
     --resource-group $ResourceGroup `
     --query id `
     --output tsv 2>$null
-
 if (-not $envId) {
-    az containerapp env create `
-        --name $EnvironmentName `
-        --resource-group $ResourceGroup `
-        --location $Location `
-        --output none
+    throw "Container Apps environment '$EnvironmentName' was not found in '$ResourceGroup'."
 }
 
-# Use ACR credentials for the initial deployment. This keeps the deployment
-# script compatible with an existing ACR. We can switch to managed identity
-# later without changing the container image or MCP endpoint.
-$acrUser = az acr credential show --name $AcrName --query username --output tsv
-$acrPassword = az acr credential show --name $AcrName --query "passwords[0].value" --output tsv
+$image = "$loginServer/$ImageName`:$Tag"
+
+if (-not $SkipBuild) {
+    Write-Host "Building local Docker image marketbrief-mcp:$Tag..."
+    docker build --no-cache -t "$ImageName`:$Tag" .
+    if ($LASTEXITCODE -ne 0) { throw "Docker build failed." }
+
+    docker tag "$ImageName`:$Tag" $image
+    if ($LASTEXITCODE -ne 0) { throw "Docker tag failed." }
+}
+
+if (-not $SkipPush) {
+    Write-Host "Logging in to ACR '$AcrName'..."
+    az acr login --name $AcrName --output none
+    if ($LASTEXITCODE -ne 0) { throw "ACR login failed." }
+
+    Write-Host "Pushing $image..."
+    docker push $image
+    if ($LASTEXITCODE -ne 0) { throw "Docker push failed." }
+}
+
+# Use existing ACR credentials if available. Enable the admin account only if
+# needed for Container Apps image pulls. This does not affect MCP behaviour.
+$acrUser = az acr credential show --name $AcrName --query username --output tsv 2>$null
+$acrPassword = az acr credential show --name $AcrName --query "passwords[0].value" --output tsv 2>$null
 if (-not $acrUser -or -not $acrPassword) {
     Write-Host "ACR admin credentials are unavailable; enabling the admin account..."
     az acr update --name $AcrName --admin-enabled true --output none
@@ -107,7 +98,7 @@ if ($appExists) {
         --output none
 }
 else {
-    Write-Host "Creating Container App '$AppName'..."
+    Write-Host "Creating Container App '$AppName' in existing environment '$EnvironmentName'..."
     az containerapp create `
         --name $AppName `
         --resource-group $ResourceGroup `
@@ -135,10 +126,10 @@ $fqdn = az containerapp show `
 Write-Host ""
 Write-Host "Deployment complete."
 Write-Host "Health: https://$fqdn/health"
-Write-Host "MCP:    https://$fqdn/mcp"
+Write-Host "MCP:    https://$fqdn/mcp/"
 Write-Host ""
 Write-Host "Test health with:"
 Write-Host "Invoke-RestMethod https://$fqdn/health"
 Write-Host ""
 Write-Host "Test MCP with:"
-Write-Host "`$env:MARKETBRIEF_MCP_URL='https://$fqdn/mcp'; py .\Test-MarketBriefMcp.py"
+Write-Host "`$env:MARKETBRIEF_MCP_URL='https://$fqdn/mcp/'; py .\Test-MarketBriefMcp.py"
