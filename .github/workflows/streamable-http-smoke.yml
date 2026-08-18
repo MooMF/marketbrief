@@ -47,15 +47,14 @@ jobs:
         run: |
           python - <<'PY'
           import asyncio
-          from mcp.client.session import ClientSession
-          from mcp.client.streamable_http import streamablehttp_client
+          from mcp import ClientSession
+          from mcp.client.streamable_http import streamable_http_client
 
           async def main():
-              async with streamablehttp_client("http://127.0.0.1:8080/mcp") as streams:
-                  read_stream, write_stream, _ = streams
+              async with streamable_http_client("http://127.0.0.1:8080/mcp") as (read_stream, write_stream):
                   async with ClientSession(read_stream, write_stream) as session:
                       init = await session.initialize()
-                      print("server:", init.serverInfo.name)
+                      print("server:", init.server_info.name)
                       tools = await session.list_tools()
                       names = [tool.name for tool in tools.tools]
                       print("tools:", names)
