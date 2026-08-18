@@ -13,7 +13,6 @@ RUN apt-get update \
 
 COPY pyproject.toml README.md LICENSE ./
 COPY src ./src
-COPY mcp_server ./mcp_server
 COPY config ./config
 
 RUN python -m pip install --upgrade pip \
