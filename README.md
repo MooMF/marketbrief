@@ -40,8 +40,10 @@ Endpoints:
 
 ```text
 GET  /health
-MCP  /mcp
+MCP  /mcp/
 ```
+
+`/mcp/` is the canonical Streamable HTTP endpoint. Requests to `/mcp` are redirected to `/mcp/` with HTTP 307 so POST semantics are preserved.
 
 Local stdio remains available:
 
@@ -80,7 +82,7 @@ py .\Test-MarketBriefMcp.py
 To test another endpoint, including Azure:
 
 ```powershell
-$env:MARKETBRIEF_MCP_URL="https://your-host/mcp"
+$env:MARKETBRIEF_MCP_URL="https://your-host/mcp/"
 py .\Test-MarketBriefMcp.py
 ```
 
@@ -104,7 +106,7 @@ Test health:
 Invoke-RestMethod http://localhost:8080/health
 ```
 
-The image listens on `0.0.0.0:8080`, exposes `/health` and `/mcp`, and requires no secrets to start.
+The image listens on `0.0.0.0:8080`, exposes `/health` and `/mcp/`, and requires no secrets to start.
 
 ## Azure Container Apps
 
@@ -116,49 +118,4 @@ The recommended deployment is an Azure Container App with:
 - maximum replicas `1` initially
 - `0.5` CPU / `1 GiB` memory initially
 - `/health` for wake/health checks
-- `/mcp` as the ChatGPT-facing MCP endpoint
-
-A deployment helper is included:
-
-```powershell
-.\Deploy-MarketBriefAzure.ps1 -AcrName <your-existing-acr-name>
-```
-
-The script builds the image with ACR Tasks, creates the resource group/environment if needed, deploys or updates the Container App, enables scale-to-zero, and prints the public health and MCP URLs.
-
-Current Azure CLI syntax is based on `az acr build`, `az containerapp create/update`, `az containerapp registry set`, and `az containerapp ingress enable`.
-
-## Data sources
-
-MarketBrief currently uses a mixture of free/public sources including Yahoo Finance, Frankfurter/ECB data, CoinGecko, RSS feeds, Forex Factory/MyFXBook-derived calendar data, and optional FRED/SoSoValue APIs.
-
-Configuration lives under `config/`. If local config files are absent, the application falls back to the checked-in `*.example.json` files.
-
-## Optional embedded AI
-
-The original Anthropic two-stage pipeline is deliberately retained. It can still generate a standalone briefing when `ANTHROPIC_API_KEY` is supplied.
-
-For this fork, however, embedded AI is optional rather than architectural: the preferred model is **MarketBrief as data/tool backend, ChatGPT as reasoning/orchestration layer**.
-
-## Project structure
-
-```text
-marketbrief/
-|- src/marketbrief/
-|  |- core/
-|  |- fetchers/
-|  |- delivery/
-|  |- renderers/
-|  |- skills/
-|  |- mcp_service.py      # MCP tools + transports
-|  `- mcp_server.py       # module entry point
-|- config/
-|- Dockerfile
-|- Deploy-MarketBriefAzure.ps1
-|- Test-MarketBriefMcp.py
-`- .github/workflows/streamable-http-smoke.yml
-```
-
-## Licence
-
-MIT.
+- `/mcp/` as the ChatGPT-facing MCP endpoint
