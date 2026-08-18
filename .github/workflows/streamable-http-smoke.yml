@@ -54,7 +54,7 @@ jobs:
           from mcp.client.streamable_http import streamable_http_client
 
           async def main():
-              async with streamable_http_client("http://127.0.0.1:8080/mcp") as (read_stream, write_stream):
+              async with streamable_http_client("http://127.0.0.1:8080/mcp/") as (read_stream, write_stream):
                   async with ClientSession(read_stream, write_stream) as session:
                       init = await session.initialize()
                       assert init.server_info.name == "marketbrief"
