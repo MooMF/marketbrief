@@ -3,8 +3,10 @@ name: Streamable HTTP Smoke Test
 on:
   push:
     paths:
-      - "mcp_server/server.py"
+      - "src/marketbrief/mcp_service.py"
+      - "src/marketbrief/mcp_server.py"
       - "pyproject.toml"
+      - "Dockerfile"
       - ".github/workflows/streamable-http-smoke.yml"
   workflow_dispatch:
 
@@ -43,10 +45,11 @@ jobs:
           cat /tmp/marketbrief-mcp.log
           exit 1
 
-      - name: MCP initialize and list tools
+      - name: MCP initialize, list tools, and call market data
         run: |
           python - <<'PY'
           import asyncio
+          import json
           from mcp import ClientSession
           from mcp.client.streamable_http import streamable_http_client
 
@@ -54,10 +57,10 @@ jobs:
               async with streamable_http_client("http://127.0.0.1:8080/mcp") as (read_stream, write_stream):
                   async with ClientSession(read_stream, write_stream) as session:
                       init = await session.initialize()
-                      print("server:", init.server_info.name)
+                      assert init.server_info.name == "marketbrief"
+
                       tools = await session.list_tools()
-                      names = [tool.name for tool in tools.tools]
-                      print("tools:", names)
+                      names = {tool.name for tool in tools.tools}
                       expected = {
                           "generate_report",
                           "fetch_market_data",
@@ -67,9 +70,18 @@ jobs:
                           "analyze_breadth",
                           "fetch_etf_flows",
                       }
-                      missing = expected - set(names)
+                      missing = expected - names
                       if missing:
                           raise SystemExit(f"Missing MCP tools: {sorted(missing)}")
+
+                      result = await session.call_tool(
+                          "fetch_market_data",
+                          {"assets": ["S&P 500", "Gold"], "include_crypto": False},
+                      )
+                      payload = json.loads(result.content[0].text)
+                      assert set(payload["prices"]) <= {"S&P 500", "Gold"}
+                      assert payload["crypto"] == []
+                      print("MCP smoke test passed")
 
           asyncio.run(main())
           PY
