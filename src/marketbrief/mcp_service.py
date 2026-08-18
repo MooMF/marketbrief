@@ -13,7 +13,7 @@ from mcp.server.stdio import stdio_server
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from mcp.types import CallToolResult, ListToolsResult, TextContent, Tool
 from starlette.applications import Starlette
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, RedirectResponse
 from starlette.routing import Mount, Route
 
 from marketbrief.core.config import MarketBriefConfig
@@ -296,10 +296,14 @@ def create_streamable_http_app() -> Starlette:
     async def health(request):
         return JSONResponse({"status": "ok", "service": "marketbrief-mcp"})
 
+    async def mcp_redirect(request):
+        return RedirectResponse(url="/mcp/", status_code=307)
+
     return Starlette(
         routes=[
             Route("/health", endpoint=health, methods=["GET"]),
-            Mount("/mcp", app=session_manager.handle_request),
+            Route("/mcp", endpoint=mcp_redirect, methods=["GET", "POST", "DELETE"]),
+            Mount("/mcp/", app=session_manager.handle_request),
         ],
         lifespan=lifespan,
     )
@@ -309,7 +313,7 @@ def run_streamable_http(port: int) -> None:
     import uvicorn
 
     host = os.getenv("MCP_HOST", "0.0.0.0")
-    log.info("Starting MarketBrief Streamable HTTP on %s:%d/mcp", host, port)
+    log.info("Starting MarketBrief Streamable HTTP on %s:%d/mcp/", host, port)
     uvicorn.run(create_streamable_http_app(), host=host, port=port)
 
 
