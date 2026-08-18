@@ -5,18 +5,18 @@ build-backend = "hatchling.build"
 [project]
 name = "marketbrief"
 version = "0.1.0"
-description = "AI-powered market intelligence framework — fetch, analyze, and deliver daily market briefings"
+description = "MCP-first market intelligence backend with optional embedded AI briefing generation"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
 authors = [
     {name = "yukipan"},
 ]
-keywords = ["market-analysis", "financial-data", "ai", "claude", "telegram", "mcp"]
+keywords = ["market-analysis", "financial-data", "mcp", "streamable-http", "trading", "ai"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Financial and Insurance Industry",
-    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: MIT",
     "Programming Language :: Python :: 3",
     "Topic :: Office/Business :: Financial :: Investment",
 ]
@@ -49,9 +49,9 @@ mcp = [
 marketbrief = "marketbrief.__main__:main"
 
 [project.urls]
-Homepage = "https://github.com/yukipanpan/marketbrief"
-Repository = "https://github.com/yukipanpan/marketbrief"
-Issues = "https://github.com/yukipanpan/marketbrief/issues"
+Homepage = "https://github.com/MooMF/marketbrief"
+Repository = "https://github.com/MooMF/marketbrief"
+Issues = "https://github.com/MooMF/marketbrief/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/marketbrief"]
