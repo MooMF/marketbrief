@@ -1,4 +1,4 @@
-"""Local integration test for the MarketBrief Streamable HTTP MCP endpoint."""
+"""Integration test for the MarketBrief Streamable HTTP MCP endpoint."""
 
 import asyncio
 import json
@@ -8,7 +8,7 @@ from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
 
-MCP_URL = os.environ.get("MARKETBRIEF_MCP_URL", "http://127.0.0.1:8080/mcp")
+MCP_URL = os.environ.get("MARKETBRIEF_MCP_URL", "http://127.0.0.1:8080/mcp/")
 
 
 async def main() -> None:
